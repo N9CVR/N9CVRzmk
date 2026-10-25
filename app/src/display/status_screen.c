@@ -3,7 +3,6 @@
  *
  * SPDX-License-Identifier: MIT
  */
-#error "N9CVR CUSTOM ZMK TEST"
 #include <zmk/display/widgets/output_status.h>
 #include <zmk/display/widgets/peripheral_status.h>
 #include <zmk/display/widgets/battery_status.h>
