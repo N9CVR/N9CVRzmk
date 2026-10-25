@@ -65,5 +65,10 @@ lv_obj_t *zmk_display_status_screen() {
     zmk_widget_wpm_status_init(&wpm_status_widget, screen);
     lv_obj_align(zmk_widget_wpm_status_obj(&wpm_status_widget), LV_ALIGN_BOTTOM_RIGHT, 0, 0);
 #endif
+    
+    lv_obj_t *n9cvr_label = lv_label_create(screen);
+    lv_label_set_text(n9cvr_label, "N9CVR");
+    lv_obj_align(n9cvr_label, LV_ALIGN_CENTER, 0, 0);
+    
     return screen;
 }
