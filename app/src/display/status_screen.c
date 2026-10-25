@@ -68,7 +68,7 @@ lv_obj_t *zmk_display_status_screen() {
 #if IS_ENABLED(CONFIG_ZMK_WIDGET_PERIPHERAL_STATUS)
     lv_obj_t *n9cvr_label = lv_label_create(screen);
     lv_label_set_text(n9cvr_label, "HamThings");
-    lv_obj_align(n9cvr_label, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_align(n9cvr_label, LV_ALIGN_CENTER, 0, -15);
 #endif
     
     return screen;
