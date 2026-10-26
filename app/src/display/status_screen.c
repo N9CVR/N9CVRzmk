@@ -3,6 +3,7 @@
  *
  * SPDX-License-Identifier: MIT
  */
+#include <lvgl.h>
 #include <zmk/display/widgets/output_status.h>
 #include <zmk/display/widgets/peripheral_status.h>
 #include <zmk/display/widgets/battery_status.h>
