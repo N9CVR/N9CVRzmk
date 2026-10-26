@@ -12,6 +12,7 @@
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
+LV_IMG_DECLARE(n9cvr_logo);
 
 #if IS_ENABLED(CONFIG_ZMK_WIDGET_BATTERY_STATUS)
 static struct zmk_widget_battery_status battery_status_widget;
@@ -66,11 +67,9 @@ lv_obj_t *zmk_display_status_screen() {
 #endif
 
 #if IS_ENABLED(CONFIG_ZMK_WIDGET_PERIPHERAL_STATUS)
-    lv_obj_t *n9cvr_label = lv_label_create(screen);
-    lv_label_set_text(n9cvr_label, "HamThings");
-
-    lv_obj_set_size(n9cvr_label, 100, 15);
-    lv_obj_set_pos(n9cvr_label, 2, 16);
+    lv_obj_t *n9cvr_img = lv_img_create(screen);
+    lv_img_set_src(n9cvr_img, &n9cvr_logo);
+    lv_obj_set_pos(n9cvr_img, 2, 6);
 #endif
     
     return screen;
