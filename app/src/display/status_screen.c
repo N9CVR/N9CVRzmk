@@ -70,7 +70,7 @@ lv_obj_t *zmk_display_status_screen() {
     lv_label_set_text(n9cvr_label, "HamThings");
 
     lv_obj_set_size(n9cvr_label, 100, 12);
-    lv_obj_set_pos(n9cvr_label, 2, 11);
+    lv_obj_set_pos(n9cvr_label, 2, 16);
 #endif
     
     return screen;
