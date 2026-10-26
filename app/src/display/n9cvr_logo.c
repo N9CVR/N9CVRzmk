@@ -3,11 +3,7 @@
  * 100 x 24 px, LV_IMG_CF_ALPHA_1BIT, 312 bytes
  */
 
-#if defined(LV_LVGL_H_INCLUDE_SIMPLE)
 #include "lvgl.h"
-#else
-#include "lvgl/lvgl.h"
-#endif
 
 #ifndef LV_ATTRIBUTE_MEM_ALIGN
 #define LV_ATTRIBUTE_MEM_ALIGN
