@@ -70,7 +70,7 @@ lv_obj_t *zmk_display_status_screen() {
 #if IS_ENABLED(CONFIG_ZMK_WIDGET_PERIPHERAL_STATUS)
     lv_obj_t *n9cvr_img = lv_img_create(screen);
     lv_img_set_src(n9cvr_img, &n9cvr_logo);
-    lv_obj_set_pos(n9cvr_img, 2, 9);
+    lv_obj_set_pos(n9cvr_img, 2, 8);
 #endif
     
     return screen;
