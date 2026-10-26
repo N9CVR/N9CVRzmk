@@ -13,7 +13,7 @@
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
-LV_IMG_DECLARE(n9cvr_logo);
+extern const lv_img_dsc_t n9cvr_logo;
 
 #if IS_ENABLED(CONFIG_ZMK_WIDGET_BATTERY_STATUS)
 static struct zmk_widget_battery_status battery_status_widget;
