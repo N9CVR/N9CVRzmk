@@ -11,11 +11,17 @@
 #include <zmk/display/status_screen.h>
 
 #include <zephyr/logging/log.h>
+
+extern bool is_usb_power_present(void);
+bool usb_powered = is_usb_power_present();
+
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #if IS_ENABLED(CONFIG_ZMK_WIDGET_BATTERY_STATUS)
 static struct zmk_widget_battery_status battery_status_widget;
 #endif
+
+if (usb_powered) {
 
 #if IS_ENABLED(CONFIG_ZMK_WIDGET_OUTPUT_STATUS)
 static struct zmk_widget_output_status output_status_widget;
@@ -68,6 +74,6 @@ lv_obj_t *zmk_display_status_screen() {
     lv_obj_t *n9cvr_label = lv_label_create(screen);
     lv_label_set_text(n9cvr_label, "N9CVR");
     lv_obj_align(n9cvr_label, LV_ALIGN_CENTER, 0, 0);
-    
+}    
     return screen;
 }
