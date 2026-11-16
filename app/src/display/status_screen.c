@@ -4,8 +4,6 @@
  * SPDX-License-Identifier: MIT
  */
 
-extern bool is_usb_power_present(void);
-
 #include <zmk/display/widgets/output_status.h>
 #include <zmk/display/widgets/peripheral_status.h>
 #include <zmk/display/widgets/battery_status.h>
