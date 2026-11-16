@@ -3,7 +3,7 @@
  *
  * SPDX-License-Identifier: MIT
  */
-
+#include <lvgl.h>
 #include <zmk/display/widgets/output_status.h>
 #include <zmk/display/widgets/peripheral_status.h>
 #include <zmk/display/widgets/battery_status.h>
@@ -13,6 +13,7 @@
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
+extern const lv_img_dsc_t n9cvr_logo;
 
 #if IS_ENABLED(CONFIG_ZMK_WIDGET_BATTERY_STATUS)
 static struct zmk_widget_battery_status battery_status_widget;
@@ -66,9 +67,11 @@ lv_obj_t *zmk_display_status_screen() {
     lv_obj_align(zmk_widget_wpm_status_obj(&wpm_status_widget), LV_ALIGN_BOTTOM_RIGHT, 0, 0);
 #endif
 
-lv_obj_t *label = lv_label_create(screen);
-lv_label_set_text(label, "N9CVR");
-lv_obj_align(label, LV_ALIGN_CENTER, 0, 0);
+#if IS_ENABLED(CONFIG_ZMK_WIDGET_PERIPHERAL_STATUS)
+    lv_obj_t *n9cvr_img = lv_img_create(screen);
+    lv_img_set_src(n9cvr_img, &n9cvr_logo);
+    lv_obj_set_pos(n9cvr_img, 2, 8);
+#endif
     
     return screen;
 }
