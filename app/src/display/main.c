@@ -187,4 +187,133 @@ static void initialize_theme() {
 #endif
 }
 
-void 
+void initialize_display(struct k_work *work) {
+    LOG_DBG("");
+
+    if (!device_is_ready(display)) {
+        LOG_ERR("Failed to find display device");
+        return;
+    }
+
+    initialized = true;
+
+    initialize_theme();
+
+    screen = zmk_display_status_screen();
+
+    if (screen == NULL) {
+        LOG_ERR("No status screen provided");
+        return;
+    }
+
+    lv_scr_load(screen);
+    unblank_display_cb(work);
+}
+
+K_WORK_DEFINE(init_work, initialize_display);
+
+int zmk_display_init() {
+
+#if IS_ENABLED(CONFIG_ZMK_DISPLAY_WORK_QUEUE_DEDICATED)
+
+    k_work_queue_start(
+        &display_work_q,
+        display_work_stack_area,
+        K_THREAD_STACK_SIZEOF(display_work_stack_area),
+        CONFIG_ZMK_DISPLAY_DEDICATED_THREAD_PRIORITY,
+        NULL
+    );
+
+#endif
+
+#if IS_ENABLED(CONFIG_ARCH_POSIX)
+
+    initialize_display(NULL);
+
+#else
+
+    k_work_submit_to_queue(
+        zmk_display_work_q(),
+        &init_work
+    );
+
+#endif
+
+    LOG_DBG("");
+
+    return 0;
+}
+
+#if IS_ENABLED(CONFIG_ZMK_DISPLAY_BLANK_ON_IDLE)
+
+int display_event_handler(const zmk_event_t *eh) {
+    struct zmk_activity_state_changed *activity_ev =
+        as_zmk_activity_state_changed(eh);
+
+    if (activity_ev != NULL) {
+        switch (activity_ev->state) {
+
+        case ZMK_ACTIVITY_ACTIVE:
+            start_display_updates();
+            break;
+
+        case ZMK_ACTIVITY_IDLE:
+            if (display_usb_powered()) {
+                start_display_updates();
+            } else {
+                stop_display_updates();
+            }
+            break;
+
+        case ZMK_ACTIVITY_SLEEP:
+            stop_display_updates();
+            break;
+
+        default:
+            LOG_WRN(
+                "Unhandled activity state: %d",
+                activity_ev->state
+            );
+            return -EINVAL;
+        }
+
+        return 0;
+    }
+
+    if (as_zmk_usb_conn_state_changed(eh) != NULL) {
+        if (display_usb_powered()) {
+            start_display_updates();
+        } else if (
+            zmk_activity_get_state() == ZMK_ACTIVITY_IDLE ||
+            zmk_activity_get_state() == ZMK_ACTIVITY_SLEEP
+        ) {
+            stop_display_updates();
+        } else {
+            start_display_updates();
+        }
+
+        return 0;
+    }
+
+    return -ENOTSUP;
+}
+
+ZMK_LISTENER(display, display_event_handler);
+
+ZMK_SUBSCRIPTION(
+    display,
+    zmk_activity_state_changed
+);
+
+ZMK_SUBSCRIPTION(
+    display,
+    zmk_usb_conn_state_changed
+);
+
+#endif /* IS_ENABLED(CONFIG_ZMK_DISPLAY_BLANK_ON_IDLE) */
+
+SYS_INIT(
+    zmk_display_init,
+    APPLICATION,
+    CONFIG_APPLICATION_INIT_PRIORITY
+);
