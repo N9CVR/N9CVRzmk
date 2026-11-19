@@ -1,391 +1,136 @@
-/*
- * Copyright (c) 2020 The ZMK Contributors
- *
- * SPDX-License-Identifier: MIT
- */
-
-#include <zephyr/init.h>
-#include <zephyr/settings/settings.h>
-
-#include <stdio.h>
-
-#include <zmk/ble.h>
-#include <zmk/endpoints.h>
-#include <zmk/hid.h>
-#include <dt-bindings/zmk/hid_usage_pages.h>
-#include <zmk/usb_hid.h>
-#include <zmk/hog.h>
-#include <zmk/event_manager.h>
-#include <zmk/events/ble_active_profile_changed.h>
-#include <zmk/events/usb_conn_state_changed.h>
-#include <zmk/events/endpoint_changed.h>
-#include <zmk/usb.h>
-
-#include <zephyr/logging/log.h>
-LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
-
-#define DEFAULT_TRANSPORT                                                                          \
-    COND_CODE_1(IS_ENABLED(CONFIG_ZMK_BLE), (ZMK_TRANSPORT_BLE), (ZMK_TRANSPORT_USB))
-
-static struct zmk_endpoint_instance current_instance = {};
-static enum zmk_transport preferred_transport =
-    ZMK_TRANSPORT_USB; /* Used if multiple endpoints are ready */
-
-static void update_current_endpoint(void);
-
-#if IS_ENABLED(CONFIG_SETTINGS)
-static void endpoints_save_preferred_work(struct k_work *work) {
-    settings_save_one("endpoints/preferred", &preferred_transport, sizeof(preferred_transport));
-}
-
-static struct k_work_delayable endpoints_save_work;
-#endif
-
-static int endpoints_save_preferred(void) {
-#if IS_ENABLED(CONFIG_SETTINGS)
-    return k_work_reschedule(&endpoints_save_work, K_MSEC(CONFIG_ZMK_SETTINGS_SAVE_DEBOUNCE));
-#else
-    return 0;
-#endif
-}
-
-bool zmk_endpoint_instance_eq(struct zmk_endpoint_instance a, struct zmk_endpoint_instance b) {
-    if (a.transport != b.transport) {
-        return false;
-    }
-
-    switch (a.transport) {
-    case ZMK_TRANSPORT_USB:
-        return true;
-
-    case ZMK_TRANSPORT_BLE:
-        return a.ble.profile_index == b.ble.profile_index;
-    }
-
-    LOG_ERR("Invalid transport %d", a.transport);
-    return false;
-}
-
-int zmk_endpoint_instance_to_str(struct zmk_endpoint_instance endpoint, char *str, size_t len) {
-    switch (endpoint.transport) {
-    case ZMK_TRANSPORT_USB:
-        return snprintf(str, len, "USB");
-
-    case ZMK_TRANSPORT_BLE:
-        return snprintf(str, len, "BLE:%d", endpoint.ble.profile_index);
-
-    default:
-        return snprintf(str, len, "Invalid");
-    }
-}
-
-#define INSTANCE_INDEX_OFFSET_USB 0
-#define INSTANCE_INDEX_OFFSET_BLE ZMK_ENDPOINT_USB_COUNT
-
-int zmk_endpoint_instance_to_index(struct zmk_endpoint_instance endpoint) {
-    switch (endpoint.transport) {
-    case ZMK_TRANSPORT_USB:
-        return INSTANCE_INDEX_OFFSET_USB;
-
-    case ZMK_TRANSPORT_BLE:
-        return INSTANCE_INDEX_OFFSET_BLE + endpoint.ble.profile_index;
-    }
-
-    LOG_ERR("Invalid transport %d", endpoint.transport);
-    return 0;
-}
-
-int zmk_endpoints_select_transport(enum zmk_transport transport) {
-    LOG_DBG("Selected endpoint transport %d", transport);
-
-    if (preferred_transport == transport) {
-        return 0;
-    }
-
-    preferred_transport = transport;
-
-    endpoints_save_preferred();
-
-    update_current_endpoint();
-
-    return 0;
-}
-
-int zmk_endpoints_toggle_transport(void) {
-    enum zmk_transport new_transport =
-        (preferred_transport == ZMK_TRANSPORT_USB) ? ZMK_TRANSPORT_BLE : ZMK_TRANSPORT_USB;
-    return zmk_endpoints_select_transport(new_transport);
-}
-
-struct zmk_endpoint_instance zmk_endpoints_selected(void) { return current_instance; }
-
-static int send_keyboard_report(void) {
-    switch (current_instance.transport) {
-    case ZMK_TRANSPORT_USB: {
-#if IS_ENABLED(CONFIG_ZMK_USB)
-        int err = zmk_usb_hid_send_keyboard_report();
-        if (err) {
-            LOG_ERR("FAILED TO SEND OVER USB: %d", err);
-        }
-        return err;
-#else
-        LOG_ERR("USB endpoint is not supported");
-        return -ENOTSUP;
-#endif /* IS_ENABLED(CONFIG_ZMK_USB) */
-    }
-
-    case ZMK_TRANSPORT_BLE: {
-#if IS_ENABLED(CONFIG_ZMK_BLE)
-        struct zmk_hid_keyboard_report *keyboard_report = zmk_hid_get_keyboard_report();
-        int err = zmk_hog_send_keyboard_report(&keyboard_report->body);
-        if (err) {
-            LOG_ERR("FAILED TO SEND OVER HOG: %d", err);
-        }
-        return err;
-#else
-        LOG_ERR("BLE HOG endpoint is not supported");
-        return -ENOTSUP;
-#endif /* IS_ENABLED(CONFIG_ZMK_BLE) */
-    }
-    }
-
-    LOG_ERR("Unhandled endpoint transport %d", current_instance.transport);
-    return -ENOTSUP;
-}
-
-static int send_consumer_report(void) {
-    switch (current_instance.transport) {
-    case ZMK_TRANSPORT_USB: {
-#if IS_ENABLED(CONFIG_ZMK_USB)
-        int err = zmk_usb_hid_send_consumer_report();
-        if (err) {
-            LOG_ERR("FAILED TO SEND OVER USB: %d", err);
-        }
-        return err;
-#else
-        LOG_ERR("USB endpoint is not supported");
-        return -ENOTSUP;
-#endif /* IS_ENABLED(CONFIG_ZMK_USB) */
-    }
-
-    case ZMK_TRANSPORT_BLE: {
-#if IS_ENABLED(CONFIG_ZMK_BLE)
-        struct zmk_hid_consumer_report *consumer_report = zmk_hid_get_consumer_report();
-        int err = zmk_hog_send_consumer_report(&consumer_report->body);
-        if (err) {
-            LOG_ERR("FAILED TO SEND OVER HOG: %d", err);
-        }
-        return err;
-#else
-        LOG_ERR("BLE HOG endpoint is not supported");
-        return -ENOTSUP;
-#endif /* IS_ENABLED(CONFIG_ZMK_BLE) */
-    }
-    }
-
-    LOG_ERR("Unhandled endpoint transport %d", current_instance.transport);
-    return -ENOTSUP;
-}
-
-int zmk_endpoints_send_report(uint16_t usage_page) {
-
-    LOG_DBG("usage page 0x%02X", usage_page);
-    switch (usage_page) {
-    case HID_USAGE_KEY:
-        return send_keyboard_report();
-
-    case HID_USAGE_CONSUMER:
-        return send_consumer_report();
-    }
-
-    LOG_ERR("Unsupported usage page %d", usage_page);
-    return -ENOTSUP;
-}
-
-#if IS_ENABLED(CONFIG_ZMK_POINTING)
-int zmk_endpoints_send_mouse_report() {
-    switch (current_instance.transport) {
-    case ZMK_TRANSPORT_USB: {
-#if IS_ENABLED(CONFIG_ZMK_USB)
-        int err = zmk_usb_hid_send_mouse_report();
-        if (err) {
-            LOG_ERR("FAILED TO SEND OVER USB: %d", err);
-        }
-        return err;
-#else
-        LOG_ERR("USB endpoint is not supported");
-        return -ENOTSUP;
-#endif /* IS_ENABLED(CONFIG_ZMK_USB) */
-    }
-
-    case ZMK_TRANSPORT_BLE: {
-#if IS_ENABLED(CONFIG_ZMK_BLE)
-        struct zmk_hid_mouse_report *mouse_report = zmk_hid_get_mouse_report();
-        int err = zmk_hog_send_mouse_report(&mouse_report->body);
-        if (err) {
-            LOG_ERR("FAILED TO SEND OVER HOG: %d", err);
-        }
-        return err;
-#else
-        LOG_ERR("BLE HOG endpoint is not supported");
-        return -ENOTSUP;
-#endif /* IS_ENABLED(CONFIG_ZMK_BLE) */
-    }
-    }
-
-    LOG_ERR("Unhandled endpoint transport %d", current_instance.transport);
-    return -ENOTSUP;
-}
-#endif // IS_ENABLED(CONFIG_ZMK_POINTING)
-
-#if IS_ENABLED(CONFIG_SETTINGS)
-
-static int endpoints_handle_set(const char *name, size_t len, settings_read_cb read_cb,
-                                void *cb_arg) {
-    LOG_DBG("Setting endpoint value %s", name);
-
-    if (settings_name_steq(name, "preferred", NULL)) {
-        if (len != sizeof(enum zmk_transport)) {
-            LOG_ERR("Invalid endpoint size (got %d expected %d)", len, sizeof(enum zmk_transport));
-            return -EINVAL;
-        }
-
-        int err = read_cb(cb_arg, &preferred_transport, sizeof(enum zmk_transport));
-        if (err <= 0) {
-            LOG_ERR("Failed to read preferred endpoint from settings (err %d)", err);
-            return err;
-        }
-
-        update_current_endpoint();
-    }
-
-    return 0;
-}
-
-SETTINGS_STATIC_HANDLER_DEFINE(endpoints, "endpoints", NULL, endpoints_handle_set, NULL, NULL);
-
-#endif /* IS_ENABLED(CONFIG_SETTINGS) */
-
-static bool is_usb_ready(void) {
-#if IS_ENABLED(CONFIG_ZMK_USB)
-    return zmk_usb_is_hid_ready();
-#else
-    return false;
-#endif
-}
-
-static bool is_ble_ready(void) {
-#if IS_ENABLED(CONFIG_ZMK_BLE)
-    return zmk_ble_active_profile_is_connected();
-#else
-    return false;
-#endif
-}
-
-static enum zmk_transport get_selected_transport(void) {
-    if (is_ble_ready()) {
-        if (is_usb_ready()) {
-            LOG_DBG("Both endpoint transports are ready. Using %d", preferred_transport);
-            return preferred_transport;
-        }
-
-        LOG_DBG("Only BLE is ready.");
-        return ZMK_TRANSPORT_BLE;
-    }
-
-    if (is_usb_ready()) {
-        LOG_DBG("Only USB is ready.");
-        return ZMK_TRANSPORT_USB;
-    }
-
-    LOG_DBG("No endpoint transports are ready.");
-    return DEFAULT_TRANSPORT;
-}
-
-static struct zmk_endpoint_instance get_selected_instance(void) {
-    struct zmk_endpoint_instance instance = {.transport = get_selected_transport()};
-
-    switch (instance.transport) {
-#if IS_ENABLED(CONFIG_ZMK_BLE)
-    case ZMK_TRANSPORT_BLE:
-        instance.ble.profile_index = zmk_ble_active_profile_index();
-        break;
-#endif // IS_ENABLED(CONFIG_ZMK_BLE)
-
-    default:
-        // No extra data for this transport.
-        break;
-    }
-
-    return instance;
-}
-
-static int zmk_endpoints_init(void) {
-#if IS_ENABLED(CONFIG_SETTINGS)
-    k_work_init_delayable(&endpoints_save_work, endpoints_save_preferred_work);
-#endif
-
-    current_instance = get_selected_instance();
-
-    return 0;
-}
-
-void zmk_endpoints_clear_current(void) {
-    zmk_hid_keyboard_clear();
-    zmk_hid_consumer_clear();
-#if IS_ENABLED(CONFIG_ZMK_POINTING)
-    zmk_hid_mouse_clear();
-#endif // IS_ENABLED(CONFIG_ZMK_POINTING)
-
-    zmk_endpoints_send_report(HID_USAGE_KEY);
-    zmk_endpoints_send_report(HID_USAGE_CONSUMER);
-}
-
-static void update_current_endpoint(void) {
-    struct zmk_endpoint_instance new_instance = get_selected_instance();
-
-    if (!zmk_endpoint_instance_eq(new_instance, current_instance)) {
-        // Cancel all current keypresses so keys don't stay held on the old endpoint.
-        zmk_endpoints_clear_current();
-
-        current_instance = new_instance;
-
-        char endpoint_str[ZMK_ENDPOINT_STR_LEN];
-        zmk_endpoint_instance_to_str(current_instance, endpoint_str, sizeof(endpoint_str));
-        LOG_INF("Endpoint changed: %s", endpoint_str);
-
-        raise_zmk_endpoint_changed((struct zmk_endpoint_changed){.endpoint = current_instance});
-    }
-}
-
-static int endpoint_listener(const zmk_event_t *eh) {
-
-#if IS_ENABLED(CONFIG_ZMK_USB)
-    if (as_zmk_usb_conn_state_changed(eh)) {
-        /*
-         * Follow USB availability automatically without saving this
-         * temporary selection to flash.
-         */
-        preferred_transport =
-            zmk_usb_is_powered()
-                ? ZMK_TRANSPORT_USB
-                : ZMK_TRANSPORT_BLE;
-
-        update_current_endpoint();
-        return 0;
-    }
-#endif
-
-    update_current_endpoint();
-    return 0;
-}
-
-ZMK_LISTENER(endpoint_listener, endpoint_listener);
-#if IS_ENABLED(CONFIG_ZMK_USB)
-ZMK_SUBSCRIPTION(endpoint_listener, zmk_usb_conn_state_changed);
-#endif
-#if IS_ENABLED(CONFIG_ZMK_BLE)
-ZMK_SUBSCRIPTION(endpoint_listener, zmk_ble_active_profile_changed);
-#endif
-
-SYS_INIT(zmk_endpoints_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);
+cmake_minimum_required(VERSION 3.13.1)
+
+set(CONFIG_APPLICATION_DEFINED_SYSCALL true)
+
+set(ZEPHYR_BOARD_ALIASES "boards/aliases.cmake")
+set(ZEPHYR_EXTRA_MODULES "${ZMK_EXTRA_MODULES};${CMAKE_CURRENT_SOURCE_DIR}/module;${CMAKE_CURRENT_SOURCE_DIR}/keymap-module")
+
+# Find Zephyr. This also loads Zephyr's build system.
+find_package(Zephyr REQUIRED HINTS ../zephyr)
+project(zmk)
+
+zephyr_linker_sources(SECTIONS include/linker/zmk-behaviors.ld)
+zephyr_linker_sources(RODATA include/linker/zmk-events.ld)
+
+if(CONFIG_ZMK_BEHAVIOR_LOCAL_IDS)
+zephyr_linker_sources(DATA_SECTIONS include/linker/zmk-behavior-local-id-map.ld)
+endif()
+
+zephyr_syscall_header(${APPLICATION_SOURCE_DIR}/include/drivers/behavior.h)
+zephyr_syscall_header(${APPLICATION_SOURCE_DIR}/include/drivers/input_processor.h)
+zephyr_syscall_header(${APPLICATION_SOURCE_DIR}/include/drivers/ext_power.h)
+
+# Add your source file to the "app" target. This must come after
+# find_package(Zephyr) which defines the target.
+target_include_directories(app PRIVATE include)
+target_sources(app PRIVATE src/stdlib.c)
+target_sources(app PRIVATE src/activity.c)
+target_sources(app PRIVATE src/behavior.c)
+target_sources_ifdef(CONFIG_ZMK_KSCAN_SIDEBAND_BEHAVIORS app PRIVATE src/kscan_sideband_behaviors.c)
+target_sources(app PRIVATE src/matrix_transform.c)
+target_sources(app PRIVATE src/physical_layouts.c)
+target_sources(app PRIVATE src/sensors.c)
+target_sources_ifdef(CONFIG_ZMK_WPM app PRIVATE src/wpm.c)
+target_sources(app PRIVATE src/event_manager.c)
+target_sources_ifdef(CONFIG_ZMK_PM app PRIVATE src/pm.c)
+target_sources_ifdef(CONFIG_ZMK_EXT_POWER app PRIVATE src/ext_power_generic.c)
+target_sources_ifdef(CONFIG_ZMK_GPIO_KEY_WAKEUP_TRIGGER app PRIVATE src/gpio_key_wakeup_trigger.c)
+target_sources(app PRIVATE src/events/activity_state_changed.c)
+target_sources(app PRIVATE src/events/position_state_changed.c)
+target_sources(app PRIVATE src/events/sensor_event.c)
+target_sources(app PRIVATE src/events/mouse_button_state_changed.c)
+target_sources_ifdef(CONFIG_ZMK_WPM app PRIVATE src/events/wpm_state_changed.c)
+target_sources_ifdef(CONFIG_USB_DEVICE_STACK app PRIVATE src/events/usb_conn_state_changed.c)
+target_sources(app PRIVATE src/behaviors/behavior_reset.c)
+target_sources_ifdef(CONFIG_ZMK_EXT_POWER app PRIVATE src/behaviors/behavior_ext_power.c)
+target_sources_ifdef(CONFIG_ZMK_BEHAVIOR_SOFT_OFF app PRIVATE src/behaviors/behavior_soft_off.c)
+add_subdirectory_ifdef(CONFIG_ZMK_POINTING src/pointing/)
+if ((NOT CONFIG_ZMK_SPLIT) OR CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+target_sources(app PRIVATE src/hid.c)
+  target_sources_ifdef(CONFIG_ZMK_MOUSE app PRIVATE src/mouse.c)
+target_sources(app PRIVATE src/behaviors/behavior_key_press.c)
+target_sources_ifdef(CONFIG_ZMK_BEHAVIOR_KEY_TOGGLE app PRIVATE src/behaviors/behavior_key_toggle.c)
+target_sources_ifdef(CONFIG_ZMK_BEHAVIOR_HOLD_TAP app PRIVATE src/behaviors/behavior_hold_tap.c)
+target_sources_ifdef(CONFIG_ZMK_BEHAVIOR_STICKY_KEY app PRIVATE src/behaviors/behavior_sticky_key.c)
+target_sources(app PRIVATE src/behaviors/behavior_caps_word.c)
+target_sources(app PRIVATE src/behaviors/behavior_key_repeat.c)
+target_sources_ifdef(CONFIG_ZMK_BEHAVIOR_MACRO app PRIVATE src/behaviors/behavior_macro.c)
+target_sources(app PRIVATE src/behaviors/behavior_momentary_layer.c)
+target_sources(app PRIVATE src/behaviors/behavior_mod_morph.c)
+target_sources(app PRIVATE src/behaviors/behavior_outputs.c)
+target_sources(app PRIVATE src/behaviors/behavior_toggle_layer.c)
+target_sources(app PRIVATE src/behaviors/behavior_to_layer.c)
+target_sources(app PRIVATE src/behaviors/behavior_transparent.c)
+target_sources(app PRIVATE src/behaviors/behavior_none.c)
+target_sources_ifdef(CONFIG_ZMK_BEHAVIOR_SENSOR_ROTATE app PRIVATE src/behaviors/behavior_sensor_rotate.c)
+target_sources_ifdef(CONFIG_ZMK_BEHAVIOR_SENSOR_ROTATE_VAR app PRIVATE src/behaviors/behavior_sensor_rotate_var.c)
+target_sources_ifdef(CONFIG_ZMK_BEHAVIOR_SENSOR_ROTATE_COMMON app PRIVATE src/behaviors/behavior_sensor_rotate_common.c)
+target_sources_ifdef(CONFIG_ZMK_BEHAVIOR_MOUSE_KEY_PRESS app PRIVATE src/behaviors/behavior_mouse_key_press.c)
+target_sources_ifdef(CONFIG_ZMK_BEHAVIOR_STUDIO_UNLOCK app PRIVATE src/behaviors/behavior_studio_unlock.c)
+  target_sources_ifdef(CONFIG_ZMK_BEHAVIOR_INPUT_TWO_AXIS app PRIVATE src/behaviors/behavior_input_two_axis.c)
+target_sources(app PRIVATE src/combo.c)
+target_sources(app PRIVATE src/behaviors/behavior_tap_dance.c)
+target_sources(app PRIVATE src/behavior_queue.c)
+target_sources(app PRIVATE src/conditional_layer.c)
+target_sources(app PRIVATE src/endpoints.c)
+target_sources(app PRIVATE src/events/endpoint_changed.c)
+target_sources(app PRIVATE src/hid_listener.c)
+target_sources(app PRIVATE src/keymap.c)
+target_sources(app PRIVATE src/events/layer_state_changed.c)
+target_sources(app PRIVATE src/events/modifiers_state_changed.c)
+target_sources(app PRIVATE src/events/keycode_state_changed.c)
+target_sources_ifdef(CONFIG_ZMK_HID_INDICATORS app PRIVATE src/hid_indicators.c)
+
+if (CONFIG_ZMK_BLE)
+target_sources(app PRIVATE src/events/ble_active_profile_changed.c)
+target_sources(app PRIVATE src/behaviors/behavior_bt.c)
+target_sources(app PRIVATE src/ble.c)
+target_sources(app PRIVATE src/hog.c)
+ endif()
+endif()
+
+target_sources_ifdef(CONFIG_ZMK_RGB_UNDERGLOW app PRIVATE src/behaviors/behavior_rgb_underglow.c)
+target_sources_ifdef(CONFIG_ZMK_BACKLIGHT app PRIVATE src/behaviors/behavior_backlight.c)
+
+target_sources_ifdef(CONFIG_ZMK_BATTERY_REPORTING app PRIVATE src/events/battery_state_changed.c)
+target_sources_ifdef(CONFIG_ZMK_BATTERY_REPORTING app PRIVATE src/battery.c)
+
+target_sources_ifdef(CONFIG_ZMK_HID_INDICATORS app PRIVATE src/events/hid_indicators_changed.c)
+
+target_sources_ifdef(CONFIG_ZMK_SPLIT app PRIVATE src/events/split_peripheral_status_changed.c)
+add_subdirectory(src/split)
+
+target_sources_ifdef(CONFIG_USB_DEVICE_STACK app PRIVATE src/usb.c)
+target_sources_ifdef(CONFIG_ZMK_USB app PRIVATE src/usb_hid.c)
+target_sources_ifdef(CONFIG_ZMK_RGB_UNDERGLOW app PRIVATE src/rgb_underglow.c)
+target_sources_ifdef(CONFIG_ZMK_BACKLIGHT app PRIVATE src/backlight.c)
+target_sources_ifdef(CONFIG_ZMK_LOW_PRIORITY_WORK_QUEUE app PRIVATE src/workqueue.c)
+target_sources(app PRIVATE src/main.c)
+
+add_subdirectory(src/display/)
+add_subdirectory_ifdef(CONFIG_SETTINGS src/settings/)
+
+if (CONFIG_ZMK_STUDIO_RPC)
+# For some reason this is failing if run from a different sub-file.
+list(APPEND CMAKE_MODULE_PATH ${ZEPHYR_BASE}/modules/nanopb)
+
+include(nanopb)
+
+# Turn off the default nanopb behavior
+set(NANOPB_GENERATE_CPP_STANDALONE OFF)
+
+nanopb_generate_cpp(proto_srcs proto_hdrs RELPATH ${ZEPHYR_ZMK_STUDIO_MESSAGES_MODULE_DIR}
+${ZEPHYR_ZMK_STUDIO_MESSAGES_MODULE_DIR}/proto/zmk/studio.proto
+${ZEPHYR_ZMK_STUDIO_MESSAGES_MODULE_DIR}/proto/zmk/meta.proto
+${ZEPHYR_ZMK_STUDIO_MESSAGES_MODULE_DIR}/proto/zmk/core.proto
+${ZEPHYR_ZMK_STUDIO_MESSAGES_MODULE_DIR}/proto/zmk/behaviors.proto
+${ZEPHYR_ZMK_STUDIO_MESSAGES_MODULE_DIR}/proto/zmk/keymap.proto
+)
+
+target_include_directories(app PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
+target_sources(app PRIVATE ${proto_srcs} ${proto_hdrs})
+
+add_subdirectory(src/studio)
+endif()
+
+zephyr_cc_option(-Wfatal-errors)
