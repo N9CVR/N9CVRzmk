@@ -3,6 +3,7 @@
  *
  * SPDX-License-Identifier: MIT
  */
+#error "N9CVR CUSTOM DISPLAY MAIN TEST"
 
 #include <zephyr/kernel.h>
 #include <zephyr/init.h>
