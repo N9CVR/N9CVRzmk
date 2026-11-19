@@ -19,6 +19,7 @@
 #include <zmk/events/ble_active_profile_changed.h>
 #include <zmk/events/usb_conn_state_changed.h>
 #include <zmk/events/endpoint_changed.h>
+#include <zmk/usb.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
@@ -358,6 +359,23 @@ static void update_current_endpoint(void) {
 }
 
 static int endpoint_listener(const zmk_event_t *eh) {
+
+#if IS_ENABLED(CONFIG_ZMK_USB)
+    if (as_zmk_usb_conn_state_changed(eh)) {
+        /*
+         * Follow USB availability automatically without saving this
+         * temporary selection to flash.
+         */
+        preferred_transport =
+            zmk_usb_is_powered()
+                ? ZMK_TRANSPORT_USB
+                : ZMK_TRANSPORT_BLE;
+
+        update_current_endpoint();
+        return 0;
+    }
+#endif
+
     update_current_endpoint();
     return 0;
 }
