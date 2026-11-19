@@ -1,15 +1,15 @@
 /*
- * Copyright (c) 2020 The ZMK Contributors
- *
- * SPDX-License-Identifier: MIT
- */
+* Copyright (c) 2020 The ZMK Contributors
+*
+* SPDX-License-Identifier: MIT
+*/
 
 #include <zephyr/kernel.h>
 #include <zephyr/init.h>
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
-#include <zephyr/logging/log.h>
 
+#include <zephyr/logging/log.h>
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #include <zephyr/drivers/display.h>
@@ -18,302 +18,174 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #include "theme.h"
 
-#include <zmk/activity.h>
-#include <zmk/usb.h>
 #include <zmk/event_manager.h>
 #include <zmk/events/activity_state_changed.h>
-#include <zmk/events/usb_conn_state_changed.h>
 #include <zmk/display/status_screen.h>
 
-static const struct device *display =
-    DEVICE_DT_GET(DT_CHOSEN(zephyr_display));
+static const struct device *display = DEVICE_DT_GET(DT_CHOSEN(zephyr_display));
 
 #if DT_HAS_CHOSEN(zmk_display_led)
 
-static const struct device *display_led =
-    DEVICE_DT_GET(DT_PARENT(DT_CHOSEN(zmk_display_led)));
-
-static const uint8_t display_led_idx =
-    DT_NODE_CHILD_IDX(DT_CHOSEN(zmk_display_led));
+static const struct device *display_led = DEVICE_DT_GET(DT_PARENT(DT_CHOSEN(zmk_display_led)));
+static const uint8_t display_led_idx = DT_NODE_CHILD_IDX(DT_CHOSEN(zmk_display_led));
 
 #endif
 
 static bool initialized = false;
+
 static lv_obj_t *screen;
 
-__attribute__((weak)) lv_obj_t *zmk_display_status_screen() {
-    return NULL;
-}
+__attribute__((weak)) lv_obj_t *zmk_display_status_screen() { return NULL; }
 
-void display_tick_cb(struct k_work *work) {
-    lv_task_handler();
-}
+void display_tick_cb(struct k_work *work) { lv_task_handler(); }
+
+#define TICK_MS 10
 
 K_WORK_DEFINE(display_tick_work, display_tick_cb);
 
 #if IS_ENABLED(CONFIG_ZMK_DISPLAY_WORK_QUEUE_DEDICATED)
 
-K_THREAD_STACK_DEFINE(
-    display_work_stack_area,
-    CONFIG_ZMK_DISPLAY_DEDICATED_THREAD_STACK_SIZE
-);
+K_THREAD_STACK_DEFINE(display_work_stack_area, CONFIG_ZMK_DISPLAY_DEDICATED_THREAD_STACK_SIZE);
 
 static struct k_work_q display_work_q;
 
 #endif
 
 struct k_work_q *zmk_display_work_q() {
-
 #if IS_ENABLED(CONFIG_ZMK_DISPLAY_WORK_QUEUE_DEDICATED)
-
-    return &display_work_q;
-
+return &display_work_q;
 #else
-
-    return &k_sys_work_q;
-
+return &k_sys_work_q;
 #endif
 }
 
-void display_timer_cb() {
-    k_work_submit_to_queue(
-        zmk_display_work_q(),
-        &display_tick_work
-    );
-}
+void display_timer_cb() { k_work_submit_to_queue(zmk_display_work_q(), &display_tick_work); }
 
 K_TIMER_DEFINE(display_timer, display_timer_cb, NULL);
 
 void unblank_display_cb(struct k_work *work) {
-
 #if DT_HAS_CHOSEN(zmk_display_led)
-
-    led_on(display_led, display_led_idx);
-
+led_on(display_led, display_led_idx);
 #endif
-
-    display_blanking_off(display);
-
+display_blanking_off(display);
 #if !IS_ENABLED(CONFIG_ARCH_POSIX)
-
-    k_timer_start(
-        &display_timer,
-        K_MSEC(CONFIG_ZMK_DISPLAY_TICK_PERIOD_MS),
-        K_MSEC(CONFIG_ZMK_DISPLAY_TICK_PERIOD_MS)
-    );
-
-#endif
+    k_timer_start(&display_timer, K_MSEC(TICK_MS), K_MSEC(TICK_MS));
+    k_timer_start(&display_timer, K_MSEC(CONFIG_ZMK_DISPLAY_TICK_PERIOD_MS),
+                  K_MSEC(CONFIG_ZMK_DISPLAY_TICK_PERIOD_MS));
+#endif // !IS_ENABLED(CONFIG_ARCH_POSIX)
 }
 
 #if IS_ENABLED(CONFIG_ZMK_DISPLAY_BLANK_ON_IDLE)
 
 void blank_display_cb(struct k_work *work) {
-
 #if !IS_ENABLED(CONFIG_ARCH_POSIX)
-
-    k_timer_stop(&display_timer);
-
-#endif
-
-    display_blanking_on(display);
-
+k_timer_stop(&display_timer);
+#endif // !IS_ENABLED(CONFIG_ARCH_POSIX)
+display_blanking_on(display);
 #if DT_HAS_CHOSEN(zmk_display_led)
-
-    led_off(display_led, display_led_idx);
-
+led_off(display_led, display_led_idx);
 #endif
 }
-
 K_WORK_DEFINE(blank_display_work, blank_display_cb);
 K_WORK_DEFINE(unblank_display_work, unblank_display_cb);
 
 static void start_display_updates() {
-    if (display == NULL) {
-        return;
-    }
+if (display == NULL) {
+return;
+}
 
-    k_work_submit_to_queue(
-        zmk_display_work_q(),
-        &unblank_display_work
-    );
+k_work_submit_to_queue(zmk_display_work_q(), &unblank_display_work);
 }
 
 static void stop_display_updates() {
-    if (display == NULL) {
-        return;
-    }
-
-    k_work_submit_to_queue(
-        zmk_display_work_q(),
-        &blank_display_work
-    );
+if (display == NULL) {
+return;
 }
 
-static bool display_usb_powered() {
-
-#if IS_ENABLED(CONFIG_USB_DEVICE_STACK)
-
-    return zmk_usb_is_powered();
-
-#else
-
-    return false;
-
-#endif
+k_work_submit_to_queue(zmk_display_work_q(), &blank_display_work);
 }
 
 #endif
 
-int zmk_display_is_initialized() {
-    return initialized;
-}
+int zmk_display_is_initialized() { return initialized; }
 
 static void initialize_theme() {
-
 #if IS_ENABLED(CONFIG_LV_USE_THEME_MONO)
+lv_disp_t *disp = lv_disp_get_default();
+lv_theme_t *theme =
+lv_theme_mono_init(disp, IS_ENABLED(CONFIG_ZMK_DISPLAY_INVERT), CONFIG_LV_FONT_DEFAULT);
+theme->font_small = CONFIG_ZMK_LV_FONT_DEFAULT_SMALL;
 
-    lv_disp_t *disp = lv_disp_get_default();
-
-    lv_theme_t *theme =
-        lv_theme_mono_init(
-            disp,
-            IS_ENABLED(CONFIG_ZMK_DISPLAY_INVERT),
-            CONFIG_LV_FONT_DEFAULT
-        );
-
-    theme->font_small = CONFIG_ZMK_LV_FONT_DEFAULT_SMALL;
-    disp->theme = theme;
-
-#endif
+disp->theme = theme;
+#endif // CONFIG_LV_USE_THEME_MONO
 }
 
 void initialize_display(struct k_work *work) {
-    LOG_DBG("");
+LOG_DBG("");
 
-    if (!device_is_ready(display)) {
-        LOG_ERR("Failed to find display device");
-        return;
-    }
+if (!device_is_ready(display)) {
+LOG_ERR("Failed to find display device");
+return;
+}
 
-    initialized = true;
+initialized = true;
 
-    initialize_theme();
+initialize_theme();
 
-    screen = zmk_display_status_screen();
+screen = zmk_display_status_screen();
 
-    if (screen == NULL) {
-        LOG_ERR("No status screen provided");
-        return;
-    }
+if (screen == NULL) {
+LOG_ERR("No status screen provided");
+return;
+}
 
-    lv_scr_load(screen);
-    unblank_display_cb(work);
+lv_scr_load(screen);
+
+unblank_display_cb(work);
 }
 
 K_WORK_DEFINE(init_work, initialize_display);
 
 int zmk_display_init() {
-
 #if IS_ENABLED(CONFIG_ZMK_DISPLAY_WORK_QUEUE_DEDICATED)
-
-    k_work_queue_start(
-        &display_work_q,
-        display_work_stack_area,
-        K_THREAD_STACK_SIZEOF(display_work_stack_area),
-        CONFIG_ZMK_DISPLAY_DEDICATED_THREAD_PRIORITY,
-        NULL
-    );
-
+k_work_queue_start(&display_work_q, display_work_stack_area,
+K_THREAD_STACK_SIZEOF(display_work_stack_area),
+CONFIG_ZMK_DISPLAY_DEDICATED_THREAD_PRIORITY, NULL);
 #endif
 
 #if IS_ENABLED(CONFIG_ARCH_POSIX)
-
-    initialize_display(NULL);
-
+initialize_display(NULL);
 #else
-
-    k_work_submit_to_queue(
-        zmk_display_work_q(),
-        &init_work
-    );
-
+k_work_submit_to_queue(zmk_display_work_q(), &init_work);
 #endif
 
-    LOG_DBG("");
-
-    return 0;
+LOG_DBG("");
+return 0;
 }
 
 #if IS_ENABLED(CONFIG_ZMK_DISPLAY_BLANK_ON_IDLE)
-
 int display_event_handler(const zmk_event_t *eh) {
-    struct zmk_activity_state_changed *activity_ev =
-        as_zmk_activity_state_changed(eh);
+struct zmk_activity_state_changed *ev = as_zmk_activity_state_changed(eh);
+if (ev == NULL) {
+return -ENOTSUP;
+}
 
-    if (activity_ev != NULL) {
-        switch (activity_ev->state) {
-
-        case ZMK_ACTIVITY_ACTIVE:
-            start_display_updates();
-            break;
-
-        case ZMK_ACTIVITY_IDLE:
-            if (display_usb_powered()) {
-                start_display_updates();
-            } else {
-                stop_display_updates();
-            }
-            break;
-
-        case ZMK_ACTIVITY_SLEEP:
-            stop_display_updates();
-            break;
-
-        default:
-            LOG_WRN(
-                "Unhandled activity state: %d",
-                activity_ev->state
-            );
-            return -EINVAL;
-        }
-
-        return 0;
-    }
-
-    if (as_zmk_usb_conn_state_changed(eh) != NULL) {
-        if (display_usb_powered()) {
-            start_display_updates();
-        } else if (
-            zmk_activity_get_state() == ZMK_ACTIVITY_IDLE ||
-            zmk_activity_get_state() == ZMK_ACTIVITY_SLEEP
-        ) {
-            stop_display_updates();
-        } else {
-            start_display_updates();
-        }
-
-        return 0;
-    }
-
-    return -ENOTSUP;
+switch (ev->state) {
+case ZMK_ACTIVITY_ACTIVE:
+start_display_updates();
+break;
+case ZMK_ACTIVITY_IDLE:
+case ZMK_ACTIVITY_SLEEP:
+stop_display_updates();
+break;
+default:
+LOG_WRN("Unhandled activity state: %d", ev->state);
+return -EINVAL;
+}
+return 0;
 }
 
 ZMK_LISTENER(display, display_event_handler);
-
-ZMK_SUBSCRIPTION(
-    display,
-    zmk_activity_state_changed
-);
-
-ZMK_SUBSCRIPTION(
-    display,
-    zmk_usb_conn_state_changed
-);
+ZMK_SUBSCRIPTION(display, zmk_activity_state_changed);
 
 #endif /* IS_ENABLED(CONFIG_ZMK_DISPLAY_BLANK_ON_IDLE) */
-
-SYS_INIT(
-    zmk_display_init,
-    APPLICATION,
-    CONFIG_APPLICATION_INIT_PRIORITY
-);
