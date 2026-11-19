@@ -8,17 +8,12 @@
 #include <zephyr/init.h>
 #include <zephyr/kernel.h>
 #include <zephyr/settings/settings.h>
-
 #include <math.h>
 #include <stdlib.h>
-
 #include <zephyr/logging/log.h>
-
 #include <zephyr/drivers/led_strip.h>
 #include <drivers/ext_power.h>
-
 #include <zmk/rgb_underglow.h>
-
 #include <zmk/activity.h>
 #include <zmk/usb.h>
 #include <zmk/event_manager.h>
@@ -29,9 +24,7 @@
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #if !DT_HAS_CHOSEN(zmk_underglow)
-
 #error "A zmk,underglow chosen node must be declared"
-
 #endif
 
 #define STRIP_CHOSEN DT_CHOSEN(zmk_underglow)
@@ -49,7 +42,7 @@ enum rgb_underglow_effect {
     UNDERGLOW_EFFECT_BREATHE,
     UNDERGLOW_EFFECT_SPECTRUM,
     UNDERGLOW_EFFECT_SWIRL,
-    UNDERGLOW_EFFECT_NUMBER // Used to track number of underglow effects
+    UNDERGLOW_EFFECT_NUMBER
 };
 
 struct rgb_underglow_state {
@@ -61,29 +54,47 @@ struct rgb_underglow_state {
 };
 
 static const struct device *led_strip;
-
 static struct led_rgb pixels[STRIP_NUM_PIXELS];
-
 static struct rgb_underglow_state state;
+
+#if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_AUTO_OFF_USB)
+/*
+ * Temporary runtime power state. This is deliberately not part of the
+ * persisted RGB state, so USB/battery brightness overrides are never saved.
+ */
+static bool rgb_usb_powered;
+#endif
 
 #if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_EXT_POWER)
 static const struct device *const ext_power = DEVICE_DT_GET(DT_INST(0, zmk_ext_power_generic));
 #endif
 
 static struct zmk_led_hsb hsb_scale_min_max(struct zmk_led_hsb hsb) {
+#if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_AUTO_OFF_USB)
+    /* Solid, spectrum, and swirl render at 100% on USB and 0% on battery. */
+    hsb.b = rgb_usb_powered ? BRT_MAX : 0;
+#endif
+
     hsb.b = CONFIG_ZMK_RGB_UNDERGLOW_BRT_MIN +
-            (CONFIG_ZMK_RGB_UNDERGLOW_BRT_MAX - CONFIG_ZMK_RGB_UNDERGLOW_BRT_MIN) * hsb.b / BRT_MAX;
+            (CONFIG_ZMK_RGB_UNDERGLOW_BRT_MAX - CONFIG_ZMK_RGB_UNDERGLOW_BRT_MIN) * hsb.b /
+                BRT_MAX;
     return hsb;
 }
 
 static struct zmk_led_hsb hsb_scale_zero_max(struct zmk_led_hsb hsb) {
+#if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_AUTO_OFF_USB)
+    /* Preserve the breathe waveform on USB, but render black on battery. */
+    if (!rgb_usb_powered) {
+        hsb.b = 0;
+    }
+#endif
+
     hsb.b = hsb.b * CONFIG_ZMK_RGB_UNDERGLOW_BRT_MAX / BRT_MAX;
     return hsb;
 }
 
 static struct led_rgb hsb_to_rgb(struct zmk_led_hsb hsb) {
     float r = 0, g = 0, b = 0;
-
     uint8_t i = hsb.h / 60;
     float v = hsb.b / ((float)BRT_MAX);
     float s = hsb.s / ((float)SAT_MAX);
@@ -126,7 +137,6 @@ static struct led_rgb hsb_to_rgb(struct zmk_led_hsb hsb) {
     }
 
     struct led_rgb rgb = {r : r * 255, g : g * 255, b : b * 255};
-
     return rgb;
 }
 
@@ -140,12 +150,10 @@ static void zmk_rgb_underglow_effect_breathe(void) {
     for (int i = 0; i < STRIP_NUM_PIXELS; i++) {
         struct zmk_led_hsb hsb = state.color;
         hsb.b = abs(state.animation_step - 1200) / 12;
-
         pixels[i] = hsb_to_rgb(hsb_scale_zero_max(hsb));
     }
 
     state.animation_step += state.animation_speed * 10;
-
     if (state.animation_step > 2400) {
         state.animation_step = 0;
     }
@@ -155,7 +163,6 @@ static void zmk_rgb_underglow_effect_spectrum(void) {
     for (int i = 0; i < STRIP_NUM_PIXELS; i++) {
         struct zmk_led_hsb hsb = state.color;
         hsb.h = state.animation_step;
-
         pixels[i] = hsb_to_rgb(hsb_scale_min_max(hsb));
     }
 
@@ -167,7 +174,6 @@ static void zmk_rgb_underglow_effect_swirl(void) {
     for (int i = 0; i < STRIP_NUM_PIXELS; i++) {
         struct zmk_led_hsb hsb = state.color;
         hsb.h = (HUE_MAX / STRIP_NUM_PIXELS * i + state.animation_step) % HUE_MAX;
-
         pixels[i] = hsb_to_rgb(hsb_scale_min_max(hsb));
     }
 
@@ -204,6 +210,12 @@ static void zmk_rgb_underglow_tick_handler(struct k_timer *timer) {
         return;
     }
 
+#if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_AUTO_OFF_USB)
+    if (!rgb_usb_powered) {
+        return;
+    }
+#endif
+
     k_work_submit_to_queue(zmk_workqueue_lowprio_work_q(), &underglow_tick_work);
 }
 
@@ -221,10 +233,15 @@ static int rgb_settings_set(const char *name, size_t len, settings_read_cb read_
 
         rc = read_cb(cb_arg, &state, sizeof(state));
         if (rc >= 0) {
+#if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_AUTO_OFF_USB)
+            if (state.on && rgb_usb_powered) {
+                k_timer_start(&underglow_tick, K_NO_WAIT, K_MSEC(50));
+            }
+#else
             if (state.on) {
                 k_timer_start(&underglow_tick, K_NO_WAIT, K_MSEC(50));
             }
-
+#endif
             return 0;
         }
 
@@ -242,6 +259,17 @@ static void zmk_rgb_underglow_save_state_work(struct k_work *_work) {
 
 static struct k_work_delayable underglow_save_work;
 #endif
+
+static void zmk_rgb_underglow_write_black(void) {
+    for (int i = 0; i < STRIP_NUM_PIXELS; i++) {
+        pixels[i] = (struct led_rgb){r : 0, g : 0, b : 0};
+    }
+
+    int err = led_strip_update_rgb(led_strip, pixels, STRIP_NUM_PIXELS);
+    if (err < 0) {
+        LOG_ERR("Failed to turn off the RGB strip (%d)", err);
+    }
+}
 
 static int zmk_rgb_underglow_init(void) {
     led_strip = DEVICE_DT_GET(STRIP_CHOSEN);
@@ -270,12 +298,24 @@ static int zmk_rgb_underglow_init(void) {
 #endif
 
 #if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_AUTO_OFF_USB)
-    state.on = zmk_usb_is_powered();
-#endif
+    rgb_usb_powered = zmk_usb_is_powered();
 
+    /*
+     * Keep the RGB engine logically enabled. USB power controls rendering only;
+     * it does not toggle external power or alter persisted user settings.
+     */
+    state.on = true;
+
+    if (rgb_usb_powered) {
+        k_timer_start(&underglow_tick, K_NO_WAIT, K_MSEC(50));
+    } else {
+        zmk_rgb_underglow_write_black();
+    }
+#else
     if (state.on) {
         k_timer_start(&underglow_tick, K_NO_WAIT, K_MSEC(50));
     }
+#endif
 
     return 0;
 }
@@ -312,17 +352,22 @@ int zmk_rgb_underglow_on(void) {
 
     state.on = true;
     state.animation_step = 0;
+
+#if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_AUTO_OFF_USB)
+    if (rgb_usb_powered) {
+        k_timer_start(&underglow_tick, K_NO_WAIT, K_MSEC(50));
+    } else {
+        zmk_rgb_underglow_write_black();
+    }
+#else
     k_timer_start(&underglow_tick, K_NO_WAIT, K_MSEC(50));
+#endif
 
     return zmk_rgb_underglow_save_state();
 }
 
 static void zmk_rgb_underglow_off_handler(struct k_work *work) {
-    for (int i = 0; i < STRIP_NUM_PIXELS; i++) {
-        pixels[i] = (struct led_rgb){r : 0, g : 0, b : 0};
-    }
-
-    led_strip_update_rgb(led_strip, pixels, STRIP_NUM_PIXELS);
+    zmk_rgb_underglow_write_black();
 }
 
 K_WORK_DEFINE(underglow_off_work, zmk_rgb_underglow_off_handler);
@@ -341,10 +386,8 @@ int zmk_rgb_underglow_off(void) {
 #endif
 
     k_work_submit_to_queue(zmk_workqueue_lowprio_work_q(), &underglow_off_work);
-
     k_timer_stop(&underglow_tick);
     state.on = false;
-
     return zmk_rgb_underglow_save_state();
 }
 
@@ -362,7 +405,6 @@ int zmk_rgb_underglow_select_effect(int effect) {
 
     state.current_effect = effect;
     state.animation_step = 0;
-
     return zmk_rgb_underglow_save_state();
 }
 
@@ -380,39 +422,34 @@ int zmk_rgb_underglow_set_hsb(struct zmk_led_hsb color) {
     }
 
     state.color = color;
-
     return 0;
 }
 
 struct zmk_led_hsb zmk_rgb_underglow_calc_hue(int direction) {
     struct zmk_led_hsb color = state.color;
-
     color.h += HUE_MAX + (direction * CONFIG_ZMK_RGB_UNDERGLOW_HUE_STEP);
     color.h %= HUE_MAX;
-
     return color;
 }
 
 struct zmk_led_hsb zmk_rgb_underglow_calc_sat(int direction) {
     struct zmk_led_hsb color = state.color;
-
     int s = color.s + (direction * CONFIG_ZMK_RGB_UNDERGLOW_SAT_STEP);
+
     if (s < 0) {
         s = 0;
     } else if (s > SAT_MAX) {
         s = SAT_MAX;
     }
-    color.s = s;
 
+    color.s = s;
     return color;
 }
 
 struct zmk_led_hsb zmk_rgb_underglow_calc_brt(int direction) {
     struct zmk_led_hsb color = state.color;
-
     int b = color.b + (direction * CONFIG_ZMK_RGB_UNDERGLOW_BRT_STEP);
     color.b = CLAMP(b, 0, BRT_MAX);
-
     return color;
 }
 
@@ -421,7 +458,6 @@ int zmk_rgb_underglow_change_hue(int direction) {
         return -ENODEV;
 
     state.color = zmk_rgb_underglow_calc_hue(direction);
-
     return zmk_rgb_underglow_save_state();
 }
 
@@ -430,7 +466,6 @@ int zmk_rgb_underglow_change_sat(int direction) {
         return -ENODEV;
 
     state.color = zmk_rgb_underglow_calc_sat(direction);
-
     return zmk_rgb_underglow_save_state();
 }
 
@@ -439,7 +474,6 @@ int zmk_rgb_underglow_change_brt(int direction) {
         return -ENODEV;
 
     state.color = zmk_rgb_underglow_calc_brt(direction);
-
     return zmk_rgb_underglow_save_state();
 }
 
@@ -452,7 +486,6 @@ int zmk_rgb_underglow_change_spd(int direction) {
     }
 
     state.animation_speed += direction;
-
     if (state.animation_speed > 5) {
         state.animation_speed = 5;
     }
@@ -460,7 +493,7 @@ int zmk_rgb_underglow_change_spd(int direction) {
     return zmk_rgb_underglow_save_state();
 }
 
-#if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_AUTO_OFF_IDLE) ||                                          \
+#if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_AUTO_OFF_IDLE) || \
     IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_AUTO_OFF_USB)
 struct rgb_underglow_sleep_state {
     bool is_awake;
@@ -473,10 +506,10 @@ static int rgb_underglow_auto_state(bool target_wake_state) {
         rgb_state_before_sleeping : false
     };
 
-    // wake up event while awake, or sleep event while sleeping -> no-op
     if (target_wake_state == sleep_state.is_awake) {
         return 0;
     }
+
     sleep_state.is_awake = target_wake_state;
 
     if (sleep_state.is_awake) {
@@ -492,7 +525,6 @@ static int rgb_underglow_auto_state(bool target_wake_state) {
 }
 
 static int rgb_underglow_event_listener(const zmk_event_t *eh) {
-
 #if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_AUTO_OFF_IDLE)
     if (as_zmk_activity_state_changed(eh)) {
         return rgb_underglow_auto_state(zmk_activity_get_state() == ZMK_ACTIVITY_ACTIVE);
@@ -501,7 +533,26 @@ static int rgb_underglow_event_listener(const zmk_event_t *eh) {
 
 #if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_AUTO_OFF_USB)
     if (as_zmk_usb_conn_state_changed(eh)) {
-        return rgb_underglow_auto_state(zmk_usb_is_powered());
+        rgb_usb_powered = zmk_usb_is_powered();
+
+        if (rgb_usb_powered) {
+            /*
+             * USB connected: resume the selected effect. Rendering functions
+             * temporarily force maximum brightness without changing saved state.
+             */
+            state.on = true;
+            state.animation_step = 0;
+            k_timer_start(&underglow_tick, K_NO_WAIT, K_MSEC(50));
+        } else {
+            /*
+             * Battery powered: stop RGB animation work and write black to the
+             * strip without toggling external power or saving a temporary state.
+             */
+            k_timer_stop(&underglow_tick);
+            k_work_submit_to_queue(zmk_workqueue_lowprio_work_q(), &underglow_off_work);
+        }
+
+        return 0;
     }
 #endif
 
@@ -509,8 +560,7 @@ static int rgb_underglow_event_listener(const zmk_event_t *eh) {
 }
 
 ZMK_LISTENER(rgb_underglow, rgb_underglow_event_listener);
-#endif // IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_AUTO_OFF_IDLE) ||
-       // IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_AUTO_OFF_USB)
+#endif
 
 #if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_AUTO_OFF_IDLE)
 ZMK_SUBSCRIPTION(rgb_underglow, zmk_activity_state_changed);
