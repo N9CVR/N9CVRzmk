@@ -182,11 +182,11 @@ int display_event_handler(const zmk_event_t *eh) {
 
         case ZMK_ACTIVITY_IDLE:
             /* Stay visible while USB-powered; blank normally on battery. */
-            if (display_usb_powered()) {
-                start_display_updates();
-            } else {
-                stop_display_updates();
-            }
+//            if (display_usb_powered()) {
+            start_display_updates();
+//            } else {
+//                stop_display_updates();
+//            }
             break;
 
         case ZMK_ACTIVITY_SLEEP:
